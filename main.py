@@ -8,7 +8,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL is missing")
 
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,12 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
 
-if not DATABASE_URL:
-    raise ValueError("❌ DATABASE_URL environment variable is missing")
-
-DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -51,6 +45,7 @@ class Clause(Base):
 class Question(BaseModel):
     question: str
 
+
 # --- Create table on startup ---
 @app.on_event("startup")
 def startup_event():
@@ -61,49 +56,59 @@ def startup_event():
 def home():
     return {"message": "Backend running successfully"}
 
+
+# --- Improved /qa Endpoint ---
 @app.post("/qa")
 def qa_endpoint(q: Question):
     """
-    Simple question–answer logic:
-    - Looks for clause ID mentioned in the question (e.g. '300.2')
-    - Or searches for words that appear in the heading/summary
+    Smarter question–answer logic:
+    - Looks for clause ID in the question
+    - If none found, scores all clauses by keyword overlap
     """
 
     question_text = q.question.lower()
     db = SessionLocal()
-
-    # --- Try to find clause by ID mentioned in the question ---
-    found_clause = None
-    for clause in db.query(Clause).all():
-        if clause.clause_id.lower() in question_text:
-            found_clause = clause
-            break
-
-    # --- If not found, try keyword search in heading/summary ---
-    if not found_clause:
-        for clause in db.query(Clause).all():
-            if any(word in clause.summary.lower() or word in clause.heading.lower()
-                   for word in question_text.split()):
-                found_clause = clause
-                break
-
+    clauses = db.query(Clause).all()
     db.close()
 
-    # --- Build response ---
-    if found_clause:
-        answer_text = (
-            f"Clause {found_clause.clause_id} — '{found_clause.heading}' "
-            f"({found_clause.edition_year} Edition): {found_clause.summary}"
-        )
-        citations = [found_clause.clause_id]
-    else:
-        answer_text = (
-            "I couldn’t find a specific clause matching your question. "
-            "Try mentioning a clause number or a keyword from the heading."
-        )
-        citations = []
+    # --- 1. Try exact clause ID match ---
+    for clause in clauses:
+        if clause.clause_id.lower() in question_text:
+            return {
+                "answer": f"Clause {clause.clause_id} — '{clause.heading}' "
+                          f"({clause.edition_year} Edition): {clause.summary}",
+                "citations": [clause.clause_id],
+            }
 
-    return {"answer": answer_text, "citations": citations}
+    # --- 2. Keyword search with scoring ---
+    stopwords = {
+        "the", "is", "in", "at", "of", "and", "a", "to",
+        "for", "on", "what", "are", "does", "define", "tell", "me", "about"
+    }
+    words = [w for w in question_text.split() if w not in stopwords]
+
+    best_match = None
+    best_score = 0
+    for clause in clauses:
+        text = (clause.heading + " " + clause.summary).lower()
+        score = sum(word in text for word in words)
+        if score > best_score:
+            best_score = score
+            best_match = clause
+
+    # --- 3. Return best match or fallback ---
+    if best_match and best_score > 0:
+        return {
+            "answer": f"Clause {best_match.clause_id} — '{best_match.heading}' "
+                      f"({best_match.edition_year} Edition): {best_match.summary}",
+            "citations": [best_match.clause_id],
+        }
+
+    return {
+        "answer": "I couldn’t find a specific clause matching your question. "
+                  "Try mentioning a clause number or a keyword from the heading.",
+        "citations": [],
+    }
 
 
 # --- List all stored clauses ---
