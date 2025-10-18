@@ -63,11 +63,48 @@ def home():
 
 @app.post("/qa")
 def qa_endpoint(q: Question):
-    # For now, we return a hardcoded answer
-    return {
-        "answer": f"Received your question: '{q.question}'. In the next step, I’ll connect to ASME B31.3 data.",
-        "citations": []
-    }
+    """
+    Simple question–answer logic:
+    - Looks for clause ID mentioned in the question (e.g. '300.2')
+    - Or searches for words that appear in the heading/summary
+    """
+
+    question_text = q.question.lower()
+    db = SessionLocal()
+
+    # --- Try to find clause by ID mentioned in the question ---
+    found_clause = None
+    for clause in db.query(Clause).all():
+        if clause.clause_id.lower() in question_text:
+            found_clause = clause
+            break
+
+    # --- If not found, try keyword search in heading/summary ---
+    if not found_clause:
+        for clause in db.query(Clause).all():
+            if any(word in clause.summary.lower() or word in clause.heading.lower()
+                   for word in question_text.split()):
+                found_clause = clause
+                break
+
+    db.close()
+
+    # --- Build response ---
+    if found_clause:
+        answer_text = (
+            f"Clause {found_clause.clause_id} — '{found_clause.heading}' "
+            f"({found_clause.edition_year} Edition): {found_clause.summary}"
+        )
+        citations = [found_clause.clause_id]
+    else:
+        answer_text = (
+            "I couldn’t find a specific clause matching your question. "
+            "Try mentioning a clause number or a keyword from the heading."
+        )
+        citations = []
+
+    return {"answer": answer_text, "citations": citations}
+
 
 # --- List all stored clauses ---
 @app.get("/clauses")
