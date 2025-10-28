@@ -1,38 +1,38 @@
 # main.py
-
 import os
+import re
 from dotenv import load_dotenv
-load_dotenv()  # 👈 loads values from .env file
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise ValueError("❌ DATABASE_URL is missing")
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-
-# --- Database setup (add below imports) ---
 from sqlalchemy import create_engine, Column, Integer, String, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+# --- Load environment variables ---
+load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("❌ DATABASE_URL is missing")
+
+# --- Database setup ---
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# --- FastAPI App ---
 app = FastAPI(title="MechMind AI Backend")
 
-# ✅ Allow frontend (Next.js) to call this API
+# Allow frontend (Next.js) to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can restrict later to your specific domain
+    allow_origins=["*"],  # later you can restrict to mechmindai.com
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- ASME B31.3 Clause Model ---
+# --- Database Model ---
 class Clause(Base):
     __tablename__ = "clauses"
     id = Column(Integer, primary_key=True, index=True)
@@ -64,7 +64,7 @@ def qa_endpoint(q: Question):
     Semantic question–answer endpoint:
     - Creates an embedding for the user question
     - Searches the vector database (b313_chunks)
-    - Returns the top 2–3 most relevant text chunks
+    - Summarizes the retrieved content using GPT
     """
     from openai import OpenAI
     from sqlalchemy import text
@@ -92,19 +92,48 @@ def qa_endpoint(q: Question):
             {"query_embedding": emb_str}
         ).fetchall()
 
-    # 3️⃣ Format results
+    # 3️⃣ If nothing found
     if not results:
         return {"answer": "No relevant section found.", "citations": []}
 
-    top_chunks = [r[0] for r in results]
-    answer_text = "\n\n---\n\n".join(top_chunks)
+    # 4️⃣ Clean up the text chunks
+    def clean_text(t):
+        t = re.sub(r"[^a-zA-Z0-9.,;:\-–()/%\s]", " ", t)
+        t = re.sub(r"\s+", " ", t)
+        return t.strip()
 
-    # 4️⃣ Return as response
+    top_chunks = [clean_text(r[0]) for r in results]
+    context = "\n\n".join(top_chunks)
+
+    # 5️⃣ Summarize using GPT
+    summary_prompt = f"""
+    You are an assistant for mechanical engineers using ASME B31.3.
+    Based on the following extracted text, answer the user's question clearly and accurately.
+    If the question refers to a clause (e.g., 300.2), focus only on that clause.
+
+    Question: {question}
+
+    Extracted text:
+    {context}
+
+    Write a short, precise answer in plain English for an engineer.
+    """
+
+    summary = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful mechanical engineering assistant."},
+            {"role": "user", "content": summary_prompt}
+        ]
+    )
+
+    answer_text = summary.choices[0].message.content
+
+    # 6️⃣ Return summarized answer
     return {
         "answer": answer_text,
         "citations": [f"distance={float(r[1]):.4f}" for r in results]
     }
-
 
 
 # --- List all stored clauses ---
