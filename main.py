@@ -61,54 +61,50 @@ def home():
 @app.post("/qa")
 def qa_endpoint(q: Question):
     """
-    Smarter question–answer logic:
-    - Looks for clause ID in the question
-    - If none found, scores all clauses by keyword overlap
+    Semantic question–answer endpoint:
+    - Creates an embedding for the user question
+    - Searches the vector database (b313_chunks)
+    - Returns the top 2–3 most relevant text chunks
     """
+    from openai import OpenAI
+    from sqlalchemy import text
 
-    question_text = q.question.lower()
-    db = SessionLocal()
-    clauses = db.query(Clause).all()
-    db.close()
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    question = q.question
 
-    # --- 1. Try exact clause ID match ---
-    for clause in clauses:
-        if clause.clause_id.lower() in question_text:
-            return {
-                "answer": f"Clause {clause.clause_id} — '{clause.heading}' "
-                          f"({clause.edition_year} Edition): {clause.summary}",
-                "citations": [clause.clause_id],
-            }
+    # 1️⃣ Generate embedding for the question
+    emb = client.embeddings.create(
+        input=question,
+        model="text-embedding-3-small"
+    ).data[0].embedding
+    emb_str = "[" + ",".join(map(str, emb)) + "]"
 
-    # --- 2. Keyword search with scoring ---
-    stopwords = {
-        "the", "is", "in", "at", "of", "and", "a", "to",
-        "for", "on", "what", "are", "does", "define", "tell", "me", "about"
-    }
-    words = [w for w in question_text.split() if w not in stopwords]
+    # 2️⃣ Query the vector database for similar content
+    with engine.connect() as conn:
+        results = conn.execute(
+            text("""
+                SELECT content,
+                       embedding <-> (:query_embedding)::vector AS distance
+                FROM b313_chunks
+                ORDER BY distance ASC
+                LIMIT 3;
+            """),
+            {"query_embedding": emb_str}
+        ).fetchall()
 
-    best_match = None
-    best_score = 0
-    for clause in clauses:
-        text = (clause.heading + " " + clause.summary).lower()
-        score = sum(word in text for word in words)
-        if score > best_score:
-            best_score = score
-            best_match = clause
+    # 3️⃣ Format results
+    if not results:
+        return {"answer": "No relevant section found.", "citations": []}
 
-    # --- 3. Return best match or fallback ---
-    if best_match and best_score > 0:
-        return {
-            "answer": f"Clause {best_match.clause_id} — '{best_match.heading}' "
-                      f"({best_match.edition_year} Edition): {best_match.summary}",
-            "citations": [best_match.clause_id],
-        }
+    top_chunks = [r[0] for r in results]
+    answer_text = "\n\n---\n\n".join(top_chunks)
 
+    # 4️⃣ Return as response
     return {
-        "answer": "I couldn’t find a specific clause matching your question. "
-                  "Try mentioning a clause number or a keyword from the heading.",
-        "citations": [],
+        "answer": answer_text,
+        "citations": [f"distance={float(r[1]):.4f}" for r in results]
     }
+
 
 
 # --- List all stored clauses ---
