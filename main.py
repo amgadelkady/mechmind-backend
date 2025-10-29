@@ -21,7 +21,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # --- FastAPI App ---
-app = FastAPI(title="MechMind AI Backend")
+app = FastAPI(title="MechMind AI Backend – Pipe Stress Analysis Prototype")
 
 # Allow frontend (Next.js) to call this API
 app.add_middleware(
@@ -85,7 +85,7 @@ def qa_endpoint(q: Question):
             text("""
                 SELECT content,
                        embedding <-> (:query_embedding)::vector AS distance
-                FROM b313_chunks
+                FROM pipe_stress_chunks
                 ORDER BY distance ASC
                 LIMIT 3;
             """),
